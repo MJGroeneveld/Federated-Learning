@@ -11,22 +11,34 @@ import pytorch_lightning as pl
 import torchvision.transforms as transforms
 import torch.utils.data as data
 from torch.utils.data import DataLoader, random_split, Subset
-from torchvision.datasets import CIFAR10
+# from torchvision.datasets import CIFAR10
 from torchmetrics.functional import accuracy
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from datasets.utils.logging import disable_progress_bar
 
 from sklearn.model_selection import train_test_split, StratifiedShuffleSplit
+from flwr_datasets import FederatedDataset
 
 import flwr as fl
 from flwr.common import Context
 
-from functions import create_model
+from functions import create_model, Net
 
-def load_dataset(): 
+if torch.backends.mps.is_available():
+    DEVICE = "mps"
+elif torch.cuda.is_available():
+    DEVICE = "cuda"
+else:
+    DEVICE = "cpu"
+print(f"Training on {DEVICE}")
+print(f"Flower {fl.__version__} / PyTorch {torch.__version__}")
+disable_progress_bar()
+
+def load_dataset(partition_id: int = 0, num_clients: int = 10) -> Tuple[List[DataLoader], List[DataLoader], DataLoader]: 
     data_dir = 'data/cifar10'
     DATA_MEANS = (0.5, 0.5, 0.5)
     DATA_STD = (0.5, 0.5, 0.5) 
-    num_clients = 2 #default is 1, but can be changed to more than 1 if there are multiple clients and we want to do federated learning 
+    num_clients = 10 
     batch_size = 32
     test_transform = transforms.Compose([
                                                   transforms.ToTensor(),
@@ -40,25 +52,43 @@ def load_dataset():
                                             transforms.ToTensor(),
                                             transforms.Normalize(DATA_MEANS, DATA_STD)
                                             ])
-    trainset = CIFAR10(data_dir, train=True, download=True, transform=train_transform)
+    def apply_transforms(batch):
+        # Instead of passing transforms to CIFAR10(..., transform=transform)
+        # we will use this function to dataset.with_transform(apply_transforms)
+        # The transforms object is exactly the same
+        batch["img"] = [test_transform(img) for img in batch["img"]]
+        return batch
+    
+    fds = FederatedDataset(dataset="cifar10", partitioners={"train": num_clients})
+    partition = fds.load_partition(partition_id)
+    partition_train_test = partition.train_test_split(test_size=0.2, seed=42)
 
-    test_dataset  = CIFAR10(data_dir, train=False, download = True, transform=test_transform)
+    partition_train_test = partition_train_test.with_transform(apply_transforms)
+    trainloader = DataLoader(
+        partition_train_test["train"], batch_size=batch_size, shuffle=True
+    )
+    valloader = DataLoader(partition_train_test["test"], batch_size=batch_size)
+    testset = fds.load_split("test").with_transform(apply_transforms)
+    testloader = DataLoader(testset, batch_size=batch_size)
 
-    partition_size = len(trainset) // num_clients #= 50000 / 25000
-    lengths = [partition_size] * num_clients
-    datasets = random_split(trainset, lengths, generator=torch.Generator().manual_seed(42))
+    # trainset = CIFAR10(data_dir, train=True, download=True, transform=train_transform)
 
-    trainloaders = [] 
-    valloaders = []
-    for ds in datasets: 
-        len_val = len(ds) // 10 
-        len_train = len(ds) - len_val
-        lengths = [len_train, len_val]
-        dataset_train, dataset_val = random_split(ds, lengths, generator=torch.Generator().manual_seed(42))
-        trainloaders.append(DataLoader(dataset_train, batch_size=batch_size, shuffle=True))
-        valloaders.append(DataLoader(dataset_val, batch_size=batch_size))
-    testloader = DataLoader(test_dataset, batch_size = batch_size)#, num_workers=1)
-    return trainloaders, valloaders, testloader
+    # test_dataset  = CIFAR10(data_dir, train=False, download = True, transform=test_transform)
+
+    # partition_size = len(trainset) // num_clients #= 50000 / 25000
+    # lengths = [partition_size] * num_clients
+    # datasets = random_split(trainset, lengths, generator=torch.Generator().manual_seed(42))
+    # trainloaders = [] 
+    # valloaders = []
+    # for ds in datasets: 
+    #     len_val = len(ds) // 10 
+    #     len_train = len(ds) - len_val
+    #     lengths = [len_train, len_val]
+    #     dataset_train, dataset_val = random_split(ds, lengths, generator=torch.Generator().manual_seed(42))
+    #     trainloaders.append(DataLoader(dataset_train, batch_size=batch_size, shuffle=True))
+    #     valloaders.append(DataLoader(dataset_val, batch_size=batch_size))
+    # testloader = DataLoader(test_dataset, batch_size = batch_size)#, num_workers=1)
+    return trainloader, valloader, testloader
 
 class ClassifierCIFAR10(pl.LightningModule): 
     def __init__(self): 
@@ -118,25 +148,58 @@ class ClassifierCIFAR10(pl.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=2e-4)
         return optimizer
     
+def train(net, trainloader, epochs: int, verbose=False):
+    """Train the network on the training set."""
+    criterion = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(net.parameters())
+    net.train()
+    for epoch in range(epochs):
+        correct, total, epoch_loss = 0, 0, 0.0
+        for batch in trainloader:
+            images, labels = batch["img"].to(DEVICE), batch["label"].to(DEVICE)
+            optimizer.zero_grad()
+            outputs = net(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            # Metrics
+            epoch_loss += loss
+            total += labels.size(0)
+            correct += (torch.max(outputs.data, 1)[1] == labels).sum().item()
+        epoch_loss /= len(trainloader.dataset)
+        epoch_acc = correct / total
+        if verbose:
+            print(f"Epoch {epoch+1}: train loss {epoch_loss}, accuracy {epoch_acc}")
+
+
+def test(net, testloader):
+    """Evaluate the network on the entire test set."""
+    criterion = torch.nn.CrossEntropyLoss()
+    correct, total, loss = 0, 0, 0.0
+    net.eval()
+    with torch.no_grad():
+        for batch in testloader:
+            images, labels = batch["img"].to(DEVICE), batch["label"].to(DEVICE)
+            outputs = net(images)
+            loss += criterion(outputs, labels).item()
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+    loss /= len(testloader.dataset)
+    accuracy = correct / total
+    return loss, accuracy
+    
 def main(): 
-    if torch.backends.mps.is_available():
-        device = torch.device('mps')  # Apple Metal Performance Shaders
-        accelerator = 'mps'    
-    elif torch.cuda.is_available() :
-        device = torch.device('cuda:0')
-    else:
-        device = torch.device('cpu')
+    trainloader, valloader, testloader = load_dataset(partition_id=0)
+    net = Net().to(DEVICE)
 
-    trainloaders, valloaders, testloader = load_dataset()
-    classifier          = ClassifierCIFAR10()    
-    trainer             = pl.Trainer(max_epochs=5,
-                                    logger=None, 
-                                    accelerator=accelerator, 
-                                    deterministic=True,
-                                    log_every_n_steps=1)
+    for epoch in range(5):
+        train(net, trainloader, 1)
+        loss, accuracy = test(net, valloader)
+        print(f"Epoch {epoch+1}: validation loss {loss}, accuracy {accuracy}")
 
-    trainer.fit(classifier, train_dataloaders = trainloaders[0], val_dataloaders = valloaders[0])
-    trainer.test(classifier, datamodule=testloader)
+    loss, accuracy = test(net, testloader)
+    print(f"Final test set performance:\n\tloss {loss}\n\taccuracy {accuracy}")
     
 if __name__ == '__main__':
     main()
