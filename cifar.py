@@ -1,5 +1,5 @@
 from collections import OrderedDict
-from typing import List, Tuple
+
 
 import matplotlib.pyplot as plt 
 import numpy as np
@@ -8,21 +8,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl 
-import torchvision.transforms as transforms
+import torchmetrics
+
 import torch.utils.data as data
-from torch.utils.data import DataLoader, random_split, Subset
+
 # from torchvision.datasets import CIFAR10
 from torchmetrics.functional import accuracy
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from datasets.utils.logging import disable_progress_bar
 
 from sklearn.model_selection import train_test_split, StratifiedShuffleSplit
-from flwr_datasets import FederatedDataset
-
 import flwr as fl
-from flwr.common import Context
 
-from functions import create_model, Net
+from functions import create_model, Net, load_dataset
 
 if torch.backends.mps.is_available():
     DEVICE = "mps"
@@ -34,172 +32,63 @@ print(f"Training on {DEVICE}")
 print(f"Flower {fl.__version__} / PyTorch {torch.__version__}")
 disable_progress_bar()
 
-def load_dataset(partition_id: int = 0, num_clients: int = 10) -> Tuple[List[DataLoader], List[DataLoader], DataLoader]: 
-    data_dir = 'data/cifar10'
-    DATA_MEANS = (0.5, 0.5, 0.5)
-    DATA_STD = (0.5, 0.5, 0.5) 
-    num_clients = 10 
-    batch_size = 32
-    test_transform = transforms.Compose([
-                                                  transforms.ToTensor(),
-                                                  transforms.Normalize(DATA_MEANS, DATA_STD)
-                                                  ])
-    train_transform = transforms.Compose([#transforms.Resize((512, 512)), 
-                                            transforms.CenterCrop(256), 
-                                            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1)), # do some small translations --> small (up, right, left, down)
-                                            transforms.ColorJitter(brightness=0.2),  # change the brightness of the images 
-                                            transforms.GaussianBlur(kernel_size=(5, 9), sigma=(0.1, 5)), # Also do gaussian blur
-                                            transforms.ToTensor(),
-                                            transforms.Normalize(DATA_MEANS, DATA_STD)
-                                            ])
-    def apply_transforms(batch):
-        # Instead of passing transforms to CIFAR10(..., transform=transform)
-        # we will use this function to dataset.with_transform(apply_transforms)
-        # The transforms object is exactly the same
-        batch["img"] = [test_transform(img) for img in batch["img"]]
-        return batch
-    
-    fds = FederatedDataset(dataset="cifar10", partitioners={"train": num_clients})
-    partition = fds.load_partition(partition_id)
-    partition_train_test = partition.train_test_split(test_size=0.2, seed=42)
-
-    partition_train_test = partition_train_test.with_transform(apply_transforms)
-    trainloader = DataLoader(
-        partition_train_test["train"], batch_size=batch_size, shuffle=True
-    )
-    valloader = DataLoader(partition_train_test["test"], batch_size=batch_size)
-    testset = fds.load_split("test").with_transform(apply_transforms)
-    testloader = DataLoader(testset, batch_size=batch_size)
-
-    # trainset = CIFAR10(data_dir, train=True, download=True, transform=train_transform)
-
-    # test_dataset  = CIFAR10(data_dir, train=False, download = True, transform=test_transform)
-
-    # partition_size = len(trainset) // num_clients #= 50000 / 25000
-    # lengths = [partition_size] * num_clients
-    # datasets = random_split(trainset, lengths, generator=torch.Generator().manual_seed(42))
-    # trainloaders = [] 
-    # valloaders = []
-    # for ds in datasets: 
-    #     len_val = len(ds) // 10 
-    #     len_train = len(ds) - len_val
-    #     lengths = [len_train, len_val]
-    #     dataset_train, dataset_val = random_split(ds, lengths, generator=torch.Generator().manual_seed(42))
-    #     trainloaders.append(DataLoader(dataset_train, batch_size=batch_size, shuffle=True))
-    #     valloaders.append(DataLoader(dataset_val, batch_size=batch_size))
-    # testloader = DataLoader(test_dataset, batch_size = batch_size)#, num_workers=1)
-    return trainloader, valloader, testloader
-
 class ClassifierCIFAR10(pl.LightningModule): 
-    def __init__(self): 
+    def __init__(self, net): 
         super().__init__() 
 
         #defining model 
-        self.model = create_model()
-
-        self.batch_size     = 32
-
-        self.test_step_y_prob = []
-        self.test_step_y_prob_multiclass = []
-        self.test_step_ys = []
-
-        self.val_step_y_prob = [] 
-        self.val_step_y_prob_multiclass = []
-        self.val_step_ys = []
-
-        self.batch_data_list = []
+        self.net = net
+        self.batch_size = 32
+        self.criterion = torch.nn.CrossEntropyLoss()
+        self.train_acc = torchmetrics.Accuracy(task="multiclass", num_classes=10)
+        self.val_acc = torchmetrics.Accuracy(task="multiclass", num_classes=10)
+        self.test_acc = torchmetrics.Accuracy(task="multiclass", num_classes=10)
 
     def training_step(self, batch, batch_idx):
-        #print("\nBATCH CONTENT:", type(batch)) #<class 'list'>
-        X, y            = batch
-        #X, y            = X.float().to(device), y.to(device)
-        y_hat           = self.model(X)
-
-        train_loss      = F.cross_entropy(y_hat, y)
-        self.log(f'train_loss', train_loss, on_step=False, on_epoch=True, batch_size=self.batch_size, prog_bar=True)
-
-        return {"loss": train_loss}
-    
-    def evaluate(self, batch, stage=None): 
-        X, y            = batch
-        y_hat           = self.model(X)
-
-        loss            = F.cross_entropy(y_hat, y)
-
-        y_pred          = torch.argmax(y_hat, dim=1) #find label with highest probability
-        acc             = accuracy(y_pred, y, task='multiclass', num_classes=10)
-
-        if stage: 
-            self.log(f'{stage}_loss', loss, on_step=False, on_epoch=True, batch_size=self.batch_size, prog_bar=True)
-            self.log(f'{stage}_acc', acc, on_step=False, on_epoch=True, batch_size=self.batch_size, prog_bar=True)
-        return {f"{stage}_loss": loss, "{stage}_acc": acc}
+        images, labels = batch["img"], batch["label"]
+        outputs = self(images)
+        loss = self.criterion(outputs, labels)
+        self.train_acc(outputs, labels)
+        self.log("train_loss", loss, prog_bar=True)
+        self.log("train_acc", self.train_acc, prog_bar=True, on_epoch=True, on_step=False)
+        return loss
     
     def validation_step(self, batch, batch_idx):
-        self.evaluate(batch, stage='val')
+        images, labels = batch["img"], batch["label"]
+        outputs = self(images)
+        loss = self.criterion(outputs, labels)
+        self.val_acc(outputs, labels)
+        self.log("val_loss", loss, prog_bar=True)
+        self.log("val_acc", self.val_acc, prog_bar=True, on_epoch=True, on_step=False)
+        return loss
 
     def test_step(self, batch, batch_idx):
-        self.evaluate(batch, stage='test')
+        images, labels = batch["img"], batch["label"]
+        outputs = self(images)
+        loss = self.criterion(outputs, labels)
+        self.test_acc(outputs, labels)
+        preds = torch.argmax(outputs, dim=1)
+
+        self.log("test_loss", loss, prog_bar=True)
+        self.log("test_acc", self.test_acc, prog_bar=True, on_epoch=True, on_step=False)
+
+        return loss
     
     def forward(self, X): 
-        out = self.model(X)
-        return F.log_softmax(out, dim=1)
+        return self.net(X)
 
     def configure_optimizers(self): 
-        optimizer = torch.optim.Adam(self.parameters(), lr=2e-4)
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
         return optimizer
-    
-def train(net, trainloader, epochs: int, verbose=False):
-    """Train the network on the training set."""
-    criterion = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(net.parameters())
-    net.train()
-    for epoch in range(epochs):
-        correct, total, epoch_loss = 0, 0, 0.0
-        for batch in trainloader:
-            images, labels = batch["img"].to(DEVICE), batch["label"].to(DEVICE)
-            optimizer.zero_grad()
-            outputs = net(images)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-            # Metrics
-            epoch_loss += loss
-            total += labels.size(0)
-            correct += (torch.max(outputs.data, 1)[1] == labels).sum().item()
-        epoch_loss /= len(trainloader.dataset)
-        epoch_acc = correct / total
-        if verbose:
-            print(f"Epoch {epoch+1}: train loss {epoch_loss}, accuracy {epoch_acc}")
 
-
-def test(net, testloader):
-    """Evaluate the network on the entire test set."""
-    criterion = torch.nn.CrossEntropyLoss()
-    correct, total, loss = 0, 0, 0.0
-    net.eval()
-    with torch.no_grad():
-        for batch in testloader:
-            images, labels = batch["img"].to(DEVICE), batch["label"].to(DEVICE)
-            outputs = net(images)
-            loss += criterion(outputs, labels).item()
-            _, predicted = torch.max(outputs.data, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-    loss /= len(testloader.dataset)
-    accuracy = correct / total
-    return loss, accuracy
     
 def main(): 
     trainloader, valloader, testloader = load_dataset(partition_id=0)
     net = Net().to(DEVICE)
-
-    for epoch in range(5):
-        train(net, trainloader, 1)
-        loss, accuracy = test(net, valloader)
-        print(f"Epoch {epoch+1}: validation loss {loss}, accuracy {accuracy}")
-
-    loss, accuracy = test(net, testloader)
-    print(f"Final test set performance:\n\tloss {loss}\n\taccuracy {accuracy}")
+    model = ClassifierCIFAR10(net) 
+    trainer = pl.Trainer(max_epochs=5, accelerator="gpu", devices=1)
+    trainer.fit(model, trainloader, valloader)  # valloader optioneel
+    trainer.test(model, testloader)
     
 if __name__ == '__main__':
     main()
