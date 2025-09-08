@@ -7,6 +7,8 @@ from flwr_datasets import FederatedDataset
 import torch 
 import torch.nn.functional as F
 from typing import List, Tuple
+import matplotlib.pyplot as plt
+from sklearn.metrics import roc_auc_score
 
 def create_model():
     model = torchvision.models.resnet18(weights=ResNet18_Weights.DEFAULT)
@@ -17,7 +19,7 @@ def create_model():
     return model
 
 class Net(nn.Module):
-    def __init__(self, num_classes=10) -> None:
+    def __init__(self, num_classes: int = 10) -> None:
         super(Net, self).__init__()
         self.conv1 = nn.Conv2d(3, 6, 5)
         self.pool = nn.MaxPool2d(2, 2)
@@ -34,37 +36,79 @@ class Net(nn.Module):
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
         return x
-    
-def load_dataset(partition_id: int = 0, num_clients: int = 10, batch_size: int = 32, dataset_name: str = "cifar10") -> Tuple[List[DataLoader], List[DataLoader], DataLoader]: 
+
+def load_dataset(config, dataset_name = None, ood=False):
     DATA_MEANS = (0.5, 0.5, 0.5)
     DATA_STD = (0.5, 0.5, 0.5) 
     test_transform = transforms.Compose([
-                                                  transforms.ToTensor(),
-                                                  transforms.Normalize(DATA_MEANS, DATA_STD)
-                                                  ])
-    train_transform = transforms.Compose([#transforms.Resize((512, 512)), 
-                                            transforms.CenterCrop(256), 
-                                            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1)), # do some small translations --> small (up, right, left, down)
-                                            transforms.ColorJitter(brightness=0.2),  # change the brightness of the images 
-                                            transforms.GaussianBlur(kernel_size=(5, 9), sigma=(0.1, 5)), # Also do gaussian blur
-                                            transforms.ToTensor(),
-                                            transforms.Normalize(DATA_MEANS, DATA_STD)
-                                            ])
-    def apply_transforms(batch):
+                                        transforms.ToTensor(),
+                                        transforms.Normalize(DATA_MEANS, DATA_STD)
+                                        ])
+    train_transform = transforms.Compose([
+                                        # transforms.CenterCrop(256), 
+                                        transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1)), # do some small translations --> small (up, right, left, down)
+                                        transforms.ColorJitter(brightness=0.2),  # change the brightness of the images 
+                                        transforms.GaussianBlur(kernel_size=(5, 9), sigma=(0.1, 5)), # Also do gaussian blur
+                                        transforms.ToTensor(),
+                                        transforms.Normalize(DATA_MEANS, DATA_STD)
+                                        ])
+    def apply_train_transforms(batch):
         # Instead of passing transforms to CIFAR10(..., transform=transform)
         # we will use this function to dataset.with_transform(apply_transforms)
         # The transforms object is exactly the same
+        batch["img"] = [train_transform(img) for img in batch["img"]]
+        return batch
+    
+    def apply_test_transforms(batch):
         batch["img"] = [test_transform(img) for img in batch["img"]]
         return batch
     
-    fds = FederatedDataset(dataset=dataset_name, partitioners={"train": num_clients})
-    partition = fds.load_partition(partition_id)
-    partition_train_test = partition.train_test_split(test_size=0.2, seed=42)
-    partition_train_test = partition_train_test.with_transform(apply_transforms)
-    
-    trainloader = DataLoader(partition_train_test["train"], batch_size=batch_size, shuffle=True)
-    valloader = DataLoader(partition_train_test["test"], batch_size=batch_size)
-    testset = fds.load_split("test").with_transform(apply_transforms)
-    testloader = DataLoader(testset, batch_size=batch_size)
+    dataset_name = dataset_name or config['dataset_name']
+    fds = FederatedDataset(dataset=dataset_name, partitioners={"train": config['num_clients']})
+
+    if not ood:
+        partition = fds.load_partition(config['partition_id'])
+        partition_train_val = partition.train_test_split(test_size=0.2, seed=42)
+        
+        partition_train_val["train"] = partition_train_val["train"].with_transform(apply_train_transforms)
+        partition_train_val["test"] = partition_train_val["test"].with_transform(apply_test_transforms)
+        
+        trainloader = DataLoader(partition_train_val["train"], batch_size=config['batch_size'], shuffle=True)
+        valloader = DataLoader(partition_train_val["test"], batch_size=config['batch_size'])
+    else: 
+        trainloader, valloader = None, None
+
+    testset = fds.load_split("test").with_transform(apply_test_transforms)
+    testloader = DataLoader(testset, batch_size=config['batch_size'])
 
     return trainloader, valloader, testloader    
+
+def evaluate_ood(model, id_loader, ood_loader, trainer):
+    # ---- In-distribution evaluatie ----
+    model.test_outputs.clear()
+    id_results = trainer.test(model, id_loader)
+    id_msps = torch.cat([x["max_prob"] for x in model.test_outputs])
+
+    # ---- OOD evaluatie ----
+    model.test_outputs.clear()
+    ood_results = trainer.test(model, ood_loader)
+    ood_msps = torch.cat([x["max_prob"] for x in model.test_outputs])
+
+    # ---- Histogram plotten ----
+    plt.hist(id_msps.cpu().numpy(), bins=50, alpha=0.6, label="ID (CIFAR-10)")
+    plt.hist(ood_msps.cpu().numpy(), bins=50, alpha=0.6, label="OOD (CIFAR-100)")
+    plt.xlabel("Maximum Softmax Probability (MSP)")
+    plt.ylabel("Aantal samples")
+    plt.legend()
+    plt.title("MSP distributie: ID vs OOD")
+    plt.show()
+
+    # ---- AUROC berekenen ----
+    # labels: 1 = ID, 0 = OOD
+    y_true = torch.cat([torch.ones_like(id_msps), torch.zeros_like(ood_msps)])
+    y_score = torch.cat([id_msps, ood_msps])
+
+    auroc = roc_auc_score(y_true.cpu().numpy(), y_score.cpu().numpy())
+    print(f"AUROC (ID vs OOD via MSP): {auroc:.4f}")
+
+    return id_msps, ood_msps, auroc
