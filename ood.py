@@ -1,5 +1,5 @@
 from cifar import ClassifierCIFAR10
-from functions import load_dataset, Net, evaluate_ood
+from cifar.functions import load_dataset, Net, evaluate_ood, LeNet
 import torch, os, glob
 import pytorch_lightning as pl 
 from oodeel.methods import MLS
@@ -23,7 +23,7 @@ def main(config):
     _,_, oodtestloader = load_dataset(config, dataset_name=config['ooddataset_name'], ood=True)
 
     # Load model from checkpoint 
-    checkpoint_folder_path = f"/Users/melaniegroeneveld/Documents/Flower Federated Learning/Federated-Learning/centralized_learning/lightning_logs/version_0/checkpoints/"
+    checkpoint_folder_path = f"/Users/melaniegroeneveld/Documents/Flower Federated Learning/Federated-Learning/centralized_learning/lightning_logs/{config['experiment_name']}/checkpoints/"
     PATH = glob.glob(os.path.join(checkpoint_folder_path, '*.ckpt'))
     model = ClassifierCIFAR10.load_from_checkpoint(PATH[0], map_location=DEVICE, config=config)
    
@@ -32,22 +32,24 @@ def main(config):
         accelerator="gpu", 
         devices=1, 
         default_root_dir=config['bin'],
-        inference_mode=False)
+        inference_mode=False, 
+        enable_checkpointing=False, 
+        logger=False)
 
     #Evaluate on in-distribution test set (CIFAR-10)
-    evaluate_ood(model, idtestloader, oodtestloader, trainer)
+    evaluate_ood(config, model, idtestloader, oodtestloader, trainer)
 
 
 if __name__ == '__main__':
     config = { 
+    'model'             : LeNet, #Net,
     'batch_size'        : 32, 
     'optimizer_lr'      : 0.0001, 
     'max_epochs'        : 50,  
     'bin'               : 'centralized_learning', 
-    'experiment_name'   : '50_epochs_cifar10_cifar100',
+    'experiment_name'   : '100_epochs_LeNet_cifar10_cifar100',
     'num_clients'       : 1,
     'num_classes'       : 10,
-    'partition_id'      : 0,
     'dataset_name'      : 'cifar10',
     'ooddataset_name'   : 'cifar100'
     }
