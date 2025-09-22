@@ -26,7 +26,7 @@ def server_fn(context: Context) -> ServerAppComponents:
     # Define strategy
     strategy = FedAvg(
         fraction_fit=1.0,
-        fraction_evaluate=1.0,
+        fraction_evaluate=0.5,
         initial_parameters=global_model_init,
         evaluate_metrics_aggregation_fn=weighted_average, 
         on_fit_config_fn=fit_config,
@@ -45,10 +45,10 @@ def fit_config(server_round: int):
     config = {
         "batch_size"        : 32,
         "current_round"     : server_round,
-        "local_epochs"      : 20,
+        "local_epochs"      : 50,
         "num_classes"       : 10, 
         'bin'               : 'federated_learning', 
-        'experiment_name'   : '17092025',
+        'experiment_name'   : '22092025',
     }
     return config
 
@@ -58,11 +58,11 @@ def evaluate_config(server_round: int):
     config = {
         "batch_size"        : 32,
         "current_round"     : server_round,
-        "local_epochs"      : 20,
+        "local_epochs"      : 50,
         "num_classes"       : 10, 
         # "metrics": ["accuracy"],  # Example metrics to compute
         'bin'               : 'federated_learning', 
-        'experiment_name'   : '17092025',
+        'experiment_name'   : '22092025',
     }
     return config
 

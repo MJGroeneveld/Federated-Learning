@@ -29,8 +29,9 @@ disable_progress_bar()
 # logging.basicConfig(level=logging.INFO)
 
 class FlowerClient(fl.client.NumPyClient):
-    def __init__(self, trainloader, valloader, testloader):
+    def __init__(self, cid, trainloader, valloader, testloader):
         self.model          = ClassifierCIFAR10()
+        self.cid            = cid
         self.trainloader    = trainloader
         self.valloader      = valloader
         self.testloader     = testloader
@@ -40,7 +41,7 @@ class FlowerClient(fl.client.NumPyClient):
 
         set_parameters(self.model, parameters)
         checkpoint_callback = ModelCheckpoint(monitor="val_loss", mode="min")
-        logger = CSVLogger(save_dir="clientlogger")
+        logger = CSVLogger(save_dir=config['bin'], name=f"client{self.cid}_{config['experiment_name']}", version=f"round{config['current_round']}")
 
         trainer = pl.Trainer(max_epochs=config['local_epochs'], 
                             default_root_dir = config['bin'], 
@@ -81,7 +82,7 @@ def client_fn(context: Context) -> Client:
     trainloader, valloader, testloader = load_dataset(partition_id=partition_id, num_partitions=num_partitions, batch_size=batch_size)
 
     # Read run_config to fetch hyperparameters relevant to this run
-    return FlowerClient(trainloader, valloader, testloader).to_client()
+    return FlowerClient(partition_id, trainloader, valloader, testloader).to_client()
 
 # Create the ClientApp
 client = ClientApp(client_fn=client_fn)

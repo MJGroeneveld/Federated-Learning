@@ -116,11 +116,11 @@ def load_dataset(partition_id: int=0, num_partitions: int=1, batch_size: int=32)
     partition_train = partition_train_valid["train"].with_transform(apply_train_transforms)
     partition_val   = partition_train_valid["test"].with_transform(apply_test_transforms)
     
-    trainloader = DataLoader(partition_train, batch_size=batch_size, shuffle=True, num_workers=2)
-    valloader = DataLoader(partition_val, batch_size=batch_size, num_workers=2)
+    trainloader = DataLoader(partition_train, batch_size=batch_size, shuffle=True, num_workers=0)
+    valloader = DataLoader(partition_val, batch_size=batch_size, num_workers=0)
 
     partition_test = partition_full["test"].with_transform(apply_test_transforms) 
-    testloader = DataLoader(partition_test, batch_size=batch_size, num_workers=2)
+    testloader = DataLoader(partition_test, batch_size=batch_size, num_workers=0)
 
     # print(f"📊 Dataset sizes (partition {partition_id}/{num_partitions}):")
     # print(f"  Train set: {len(partition_train)} samples") #30000 in centralized learning and 9999 in federated learning with 3 clients
