@@ -9,12 +9,33 @@ from cifar.task import ClassifierCIFAR10
 # logging.basicConfig(level=logging.INFO)
 
 def weighted_average(metrics: List[Tuple[int, Metrics]]) -> Metrics:
-    # Multiply accuracy of each client by number of examples used
-    accuracies = [num_examples * m["accuracy"] for num_examples, m in metrics]
+
     examples = [num_examples for num_examples, _ in metrics]
 
-    # Aggregate and return custom metric (weighted average)
-    return {"accuracy": sum(accuracies) / sum(examples)}
+    # Accuracy
+    accuracies = [
+        num_examples * m.get("accuracy", 0.0) 
+        for num_examples, m in metrics
+    ]
+    avg_accuracy = sum(accuracies) / sum(examples) if sum(examples) > 0 else 0.0
+
+    # AUROC (bijvoorbeeld gewogen gemiddelde)
+    aurocs = [
+        num_examples * m.get("auroc_ood", 0.0)
+        for num_examples, m in metrics
+    ]
+    avg_auroc = sum(aurocs) / sum(examples) if sum(examples) > 0 else 0.0
+
+    return {
+        "accuracy": avg_accuracy,
+        "auroc_ood": avg_auroc
+    }
+    # # Multiply accuracy of each client by number of examples used
+    # accuracies = [num_examples * m["accuracy"] for num_examples, m in metrics]
+    # examples = [num_examples for num_examples, _ in metrics]
+
+    # # Aggregate and return custom metric (weighted average)
+    # return {"accuracy": sum(accuracies) / sum(examples)}
 
 def server_fn(context: Context) -> ServerAppComponents:
     """Construct components for ServerApp."""
@@ -47,8 +68,8 @@ def fit_config(server_round: int):
         "current_round"     : server_round,
         "local_epochs"      : 50,
         "num_classes"       : 10, 
-        'bin'               : 'federated_learning', 
-        'experiment_name'   : '22092025',
+        'bin'               : 'ood_federated_learning', 
+        'experiment_name'   : '23092025',
     }
     return config
 
@@ -61,8 +82,8 @@ def evaluate_config(server_round: int):
         "local_epochs"      : 50,
         "num_classes"       : 10, 
         # "metrics": ["accuracy"],  # Example metrics to compute
-        'bin'               : 'federated_learning', 
-        'experiment_name'   : '22092025',
+        'bin'               : 'ood_federated_learning', 
+        'experiment_name'   : '23092025',
     }
     return config
 

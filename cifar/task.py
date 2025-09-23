@@ -24,25 +24,18 @@ import flwr as fl
 
 from cifar.functions import Net, load_dataset, LeNet
 
-# logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
-
 if torch.backends.mps.is_available():
     DEVICE = "mps"
 elif torch.cuda.is_available():
     DEVICE = "cuda"
 else:
     DEVICE = "cpu"
-# print(f"Training on {DEVICE}")
-# print(f"Flower {fl.__version__} / PyTorch {torch.__version__}")
-# disable_progress_bar()
 
 class ClassifierCIFAR10(pl.LightningModule): 
     def __init__(self): 
         super().__init__() 
 
-        # self.num_classes    = config['num_classes']
-        self.model            = Net() #config['model'](num_classes = self.num_classes) 
-
+        self.model      = Net()
         self.criterion  = torch.nn.CrossEntropyLoss()
         self.train_acc  = torchmetrics.Accuracy(task="multiclass", num_classes=10)
         self.val_acc    = torchmetrics.Accuracy(task="multiclass", num_classes=10)
@@ -56,8 +49,8 @@ class ClassifierCIFAR10(pl.LightningModule):
         outputs = self.model(images)
         loss = self.criterion(outputs, labels)
         accurancy = self.train_acc(outputs, labels)
-        self.log("train_loss", loss)#, prog_bar=False, on_epoch=True, on_step=False)
-        self.log("train_acc", accurancy)# , prog_bar=False, on_epoch=True, on_step=False)
+        self.log("train_loss", loss)
+        self.log("train_acc", accurancy)
         return loss
     
     def validation_step(self, batch, batch_idx):
@@ -65,44 +58,40 @@ class ClassifierCIFAR10(pl.LightningModule):
         outputs = self.model(images)
         loss = self.criterion(outputs, labels)
         accuracy = self.val_acc(outputs, labels)
-        self.log("val_loss", loss)#, prog_bar=True, on_epoch=True, on_step=False)
-        self.log("val_acc", accuracy)#, prog_bar=True, on_epoch=True, on_step=False)
+        self.log("val_loss", loss)
+        self.log("val_acc", accuracy)
         return loss
 
     def test_step(self, batch, batch_idx):
-        images = batch["img"]
-        labels = batch.get("label", None)
+        if isinstance(batch, dict): # FederatedDataset CIFAR10 ID dataset
+            images, labels = batch["img"], batch.get("label", None)
+            outputs = self.model(images)
+            preds = torch.argmax(outputs, dim=1)
+            probs = torch.softmax(outputs, dim=1)
 
-        if labels is not None: 
-            labels = labels
-
-        outputs = self.model(images)
-        preds = torch.argmax(outputs, dim=1)
-        probs = torch.softmax(outputs, dim=1)
-
-        # Loss alleen berekenen als labels beschikbaar zijn (ID)
-        if labels is not None:
             loss = self.criterion(outputs, labels)
             accuracy = self.test_acc(preds, labels)
-            self.log("test_acc", accuracy)#, prog_bar=True, on_epoch=True, on_step=False)
-            self.log("test_loss", loss)#, prog_bar=True, on_epoch=True, on_step=False)
-        else:
-            # Geen labels (OOD), geen loss/logging
-            loss = torch.tensor(0.0, device=images.device)
+            self.log("test_acc", accuracy)
+            self.log("test_loss", loss)
 
-        # if self.dataset_name == 'cifar10':
-        #     # Alleen voor in-distribution evalueren we accuracy
-        #     self.test_acc(preds, labels)
-        #     self.log("test_acc", self.test_acc, prog_bar=False, on_epoch=True, on_step=False)
-        
-        # self.log("test_loss", loss, prog_bar=False)
+            self.test_outputs.append({
+                # "loss": loss.detach(),
+                # "correct": (preds == labels).sum().item(), 
+                # "total": labels.size(0), 
+                "max_prob": probs.max(dim=1).values,
+            })
 
-        self.test_outputs.append({
-            "loss": loss.detach(),
-            "correct": (preds == labels).sum().item() if labels is not None else None,
-            "total": labels.size(0) if labels is not None else None,
-            "max_prob": probs.max(dim=1).values,
-        })
+        if isinstance(batch, list):  # torchvision CIFAR100 OOD dataset
+            images_ood, labels_ood = batch
+            outputs_ood = self.model(images_ood)
+            probs_ood = torch.softmax(outputs_ood, dim=1)
+
+            loss = torch.tensor(0.0, device=images_ood.device)
+
+            self.test_outputs.append({
+                "labels_ood": labels_ood, 
+                "max_prob_ood": probs_ood.max(dim=1).values,
+            })
         return loss
     
     def forward(self, X): 

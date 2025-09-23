@@ -7,6 +7,7 @@ from torchvision.models import resnet18, ResNet18_Weights
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, random_split, Subset
 from flwr_datasets import FederatedDataset
+from torchvision.datasets import CIFAR100
 from flwr_datasets.partitioner import IidPartitioner
 import torch 
 import torch.nn.functional as F
@@ -92,23 +93,31 @@ def set_parameters(model, parameters: List[np.ndarray]) -> None:
     state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
     model.load_state_dict(state_dict, strict=True)
 
+def load_dataset_ood(batch_size=32):
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5071, 0.4867, 0.4408),
+                             (0.2675, 0.2565, 0.2761))
+    ])
+    testset_ood = CIFAR100(root="./data", train=False, download=True, transform=transform)
+    testloader_ood = DataLoader(testset_ood, batch_size=batch_size, shuffle=False, num_workers=0)
+    return testloader_ood
+
 fds = None  # Cache FederatedDataset
 
 def load_dataset(partition_id: int=0, num_partitions: int=1, batch_size: int=32): 
     # Only initialize `FederatedDataset` once
     global fds
-
-    if fds is None:
-        partitioner = IidPartitioner(num_partitions=num_partitions)
+    if fds is None:                                                                     #als fds nog niet bestaat, wordt er een nieuwe federated dataset aangemaakt
+        partitioner = IidPartitioner(num_partitions=num_partitions)                     #de dataset wordt IID gesplitst over num_partitions clients 
         fds = FederatedDataset(dataset="cifar10", partitioners={"train": partitioner})
 
-    # if not ood:
-    partition = fds.load_partition(partition_id, "train")
+    partition = fds.load_partition(partition_id, "train")                               #haalt de data op voor een speicifieke client (parition_id) uit de train set
 
     # 20% for on federated evaluation (testset)
-    partition_full = partition.train_test_split(test_size=0.2, seed=42)
+    partition_full = partition.train_test_split(test_size=0.2, seed=42)                 #partition_full["train"] → 80% van de data & partition_full["test"] → 20% van de data
 
-    # 60 % for the federated train and 20 % for the federated validation (both in fit)
+    # van de 80% train dataset, 75% voor training en 25% voor validation
     partition_train_valid = partition_full["train"].train_test_split(
         train_size=0.75, seed=42
     )
@@ -132,49 +141,3 @@ def load_dataset(partition_id: int=0, num_partitions: int=1, batch_size: int=32)
     # print(f"  Testloader batches:  {len(testloader)} (batch_size={testloader.batch_size})") # 313 in centralized learning and 105 in federated learning
 
     return trainloader, valloader, testloader    
-
-def evaluate_ood(config, model, id_loader, ood_loader, trainer, out_dir: str, tag: str = ""):
-    # ---- In-distribution evaluatie ----
-    model.test_outputs.clear()
-    trainer.test(model, id_loader)
-    id_msps = torch.cat([x["max_prob"] for x in model.test_outputs])
-
-    # id_outputs = []  # aparte lijst voor ID
-    # model.test_outputs = id_outputs  # model vult deze tijdens test_step
-    # trainer.test(model, id_loader, verbose=False)
-    # id_msps = torch.cat([x["max_prob"] for x in id_outputs])
-
-    # ---- OOD evaluatie ----
-    model.test_outputs.clear()
-    trainer.test(model, ood_loader)
-    ood_msps = torch.cat([x["max_prob"] for x in model.test_outputs])
-    
-    # ood_outputs = []  # aparte lijst voor OOD
-    # model.test_outputs = ood_outputs
-    # trainer.test(model, ood_loader, verbose=False)
-    # ood_msps = torch.cat([x["max_prob"] for x in ood_outputs])
-
-    # ---- AUROC berekenen ----
-    # labels: 1 = ID, 0 = OOD
-    y_true = torch.cat([torch.ones_like(id_msps), torch.zeros_like(ood_msps)])
-    y_score = torch.cat([id_msps, ood_msps])
-
-    auroc = roc_auc_score(y_true.cpu().numpy(), y_score.cpu().numpy())
-    print(f"AUROC (ID vs OOD via MSP): {auroc:.4f}")
-
-    # ---- Histogram plotten ----
-    os.makedirs(out_dir, exist_ok=True)
-    filename = f"ood_hist_{tag}.png" if tag else "ood_hist.png"
-    filepath = os.path.join(out_dir, filename)
-
-    plt.figure()
-    plt.hist(id_msps.cpu().numpy(), bins=50, alpha=0.6, label="ID (CIFAR-10)")
-    plt.hist(ood_msps.cpu().numpy(), bins=50, alpha=0.6, label="OOD (CIFAR-100)")
-    plt.xlabel("Maximum Softmax Probability (MSP)")
-    plt.ylabel("Aantal samples")
-    plt.legend()
-    plt.title(f"MSP distributie: ID vs OOD (AUROC={auroc:.3f})")
-    plt.savefig(filepath)
-    plt.close()
-
-    return id_msps, ood_msps, auroc
