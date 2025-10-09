@@ -217,3 +217,5 @@ __marimo__/
 
 # Custom ignores
 data
+federated_learning
+ood_federated_learning
