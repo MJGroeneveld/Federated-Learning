@@ -1,29 +1,23 @@
 import matplotlib.pyplot as plt 
 
 import os 
-import warnings 
+
 import torch 
-import logging
-import torch.nn as nn
-import torch.nn.functional as F
+
 from flwr.common import Context
 import pytorch_lightning as pl 
-import torchvision.transforms as transforms
-import torch.utils.data as data
-from torch.utils.data import DataLoader, random_split, Subset
+
 from torchvision import datasets
-from torchmetrics.functional import accuracy
 
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
 
 import flwr as fl
-from flwr.client import Client, ClientApp, NumPyClient
-from flwr.app import Message, MetricRecord, RecordDict
+from flwr.client import Client, ClientApp
 
 from datasets.utils.logging import disable_progress_bar
 
-from cifar.functions import  Net, load_dataset, load_dataset_ood, LeNet, get_parameters, set_parameters
+from cifar.functions import load_dataset, load_dataset_ood, get_parameters, set_parameters
 from cifar.task import ClassifierCIFAR10
 
 from sklearn.metrics import roc_auc_score

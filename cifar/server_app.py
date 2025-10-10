@@ -69,7 +69,7 @@ def fit_config(server_round: int):
         "local_epochs"      : 50,
         "num_classes"       : 10, 
         'bin'               : 'ood_federated_learning', 
-        'experiment_name'   : '23092025',
+        'experiment_name'   : '09102025_LeNet',
     }
     return config
 
@@ -81,9 +81,8 @@ def evaluate_config(server_round: int):
         "current_round"     : server_round,
         "local_epochs"      : 50,
         "num_classes"       : 10, 
-        # "metrics": ["accuracy"],  # Example metrics to compute
         'bin'               : 'ood_federated_learning', 
-        'experiment_name'   : '23092025',
+        'experiment_name'   : '09102025_LeNet',
     }
     return config
 

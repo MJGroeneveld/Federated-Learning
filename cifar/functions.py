@@ -1,19 +1,15 @@
-import torchvision 
-import os
 from collections import OrderedDict
+from typing import List
 import numpy as np
 import torch.nn as nn 
-from torchvision.models import resnet18, ResNet18_Weights
 import torchvision.transforms as transforms
-from torch.utils.data import DataLoader, random_split, Subset
+from torch.utils.data import DataLoader
 from flwr_datasets import FederatedDataset
 from torchvision.datasets import CIFAR100
 from flwr_datasets.partitioner import IidPartitioner
 import torch 
 import torch.nn.functional as F
-from typing import List, Tuple
-import matplotlib.pyplot as plt
-from sklearn.metrics import roc_auc_score
+
 
 class LeNet(nn.Module):
     def __init__(self, num_classes: int = 10) -> None:
@@ -93,16 +89,6 @@ def set_parameters(model, parameters: List[np.ndarray]) -> None:
     state_dict = OrderedDict({k: torch.tensor(v) for k, v in params_dict})
     model.load_state_dict(state_dict, strict=True)
 
-def load_dataset_ood(batch_size=32):
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.5071, 0.4867, 0.4408),
-                             (0.2675, 0.2565, 0.2761))
-    ])
-    testset_ood = CIFAR100(root="./data", train=False, download=True, transform=transform)
-    testloader_ood = DataLoader(testset_ood, batch_size=batch_size, shuffle=False, num_workers=0)
-    return testloader_ood
-
 fds = None  # Cache FederatedDataset
 
 def load_dataset(partition_id: int=0, num_partitions: int=1, batch_size: int=32): 
@@ -141,3 +127,13 @@ def load_dataset(partition_id: int=0, num_partitions: int=1, batch_size: int=32)
     # print(f"  Testloader batches:  {len(testloader)} (batch_size={testloader.batch_size})") # 313 in centralized learning and 105 in federated learning
 
     return trainloader, valloader, testloader    
+
+def load_dataset_ood(batch_size=32):
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.5071, 0.4867, 0.4408),
+                             (0.2675, 0.2565, 0.2761))
+    ])
+    testset_ood = CIFAR100(root="./data", train=False, download=True, transform=transform)
+    testloader_ood = DataLoader(testset_ood, batch_size=batch_size, shuffle=False, num_workers=0)
+    return testloader_ood

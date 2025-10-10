@@ -1,28 +1,7 @@
-from collections import OrderedDict
-
 import torch 
-import logging
-import torch.nn as nn
-import torch.nn.functional as F
 import pytorch_lightning as pl 
 import torchmetrics
-
-from torch.optim.adam import Adam
-
-from typing import Any
-
-import torch.utils.data as data
-from pytorch_lightning.loggers import CSVLogger
-
-# from torchvision.datasets import CIFAR10
-from torchmetrics.functional import accuracy
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
-from datasets.utils.logging import disable_progress_bar
-
-from sklearn.model_selection import train_test_split, StratifiedShuffleSplit
-import flwr as fl
-
-from cifar.functions import Net, load_dataset, LeNet
+from cifar.functions import Net, LeNet
 
 if torch.backends.mps.is_available():
     DEVICE = "mps"
@@ -35,7 +14,7 @@ class ClassifierCIFAR10(pl.LightningModule):
     def __init__(self): 
         super().__init__() 
 
-        self.model      = Net()
+        self.model      = LeNet()
         self.criterion  = torch.nn.CrossEntropyLoss()
         self.train_acc  = torchmetrics.Accuracy(task="multiclass", num_classes=10)
         self.val_acc    = torchmetrics.Accuracy(task="multiclass", num_classes=10)
