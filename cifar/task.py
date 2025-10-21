@@ -14,7 +14,7 @@ class ClassifierCIFAR10(pl.LightningModule):
     def __init__(self): 
         super().__init__() 
 
-        self.model      = LeNet()
+        self.model      = Net()
         self.criterion  = torch.nn.CrossEntropyLoss()
         self.train_acc  = torchmetrics.Accuracy(task="multiclass", num_classes=10)
         self.val_acc    = torchmetrics.Accuracy(task="multiclass", num_classes=10)
@@ -57,6 +57,7 @@ class ClassifierCIFAR10(pl.LightningModule):
                 # "loss": loss.detach(),
                 # "correct": (preds == labels).sum().item(), 
                 # "total": labels.size(0), 
+                "probs": probs.detach(),
                 "max_prob": probs.max(dim=1).values,
             })
 
@@ -69,6 +70,7 @@ class ClassifierCIFAR10(pl.LightningModule):
 
             self.test_outputs.append({
                 "labels_ood": labels_ood, 
+                "probs_ood": probs_ood.detach(),
                 "max_prob_ood": probs_ood.max(dim=1).values,
             })
         return loss
